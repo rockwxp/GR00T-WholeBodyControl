@@ -300,6 +300,10 @@ class BaseConfig(ArgsConfigTemplate):
 
         if self.robot_model == "g1_23dof":
             self.with_hands = False
+            # The 23-DoF asset's light ankle links become unstable with the
+            # 29-DoF default of 200 Hz (5 ms).  This value later overrides the
+            # YAML SIMULATE_DT, so enforce the model's safe 500 Hz minimum here.
+            self.sim_frequency = max(self.sim_frequency, 500)
 
         # Set default gravity compensation joints if not specified
         if self.gravity_compensation_joints is None:

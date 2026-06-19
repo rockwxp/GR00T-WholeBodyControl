@@ -1,5 +1,5 @@
 ROBOT_TYPE: "g1_23dof"
-ROBOT_SCENE: "gear_sonic/data/robots/g1/g1_23dof.xml"
+ROBOT_SCENE: "gear_sonic/data/robots/g1/g1_23dof_old.xml"
 
 DOMAIN_ID: 0
 INTERFACE: "lo"
@@ -13,7 +13,9 @@ FREE_BASE: false
 PRINT_SCENE_INFORMATION: true
 ENABLE_ELASTIC_BAND: true
 
-SIMULATE_DT: 0.005
+# The true 23-DoF model has very light ankle links and needs the native 2 ms
+# integration step.  At 5 ms it can become numerically unstable on contact.
+SIMULATE_DT: 0.002
 VIEWER_DT: 0.02
 REWARD_DT: 0.02
 USE_SENSOR: false
