@@ -101,7 +101,7 @@ def override_wbc_config(
 
     # Sim-to-real KD gap: waist pitch (index 14) is over-damped in sim;
     # reduce KD by 10 on the real robot to avoid sluggish response
-    if config.env_type == "real":
+    if config.env_type == "real" and config.robot_model == "g1_29dof":
         wbc_config["MOTOR_KD"][14] = wbc_config["MOTOR_KD"][14] - 10
 
     return wbc_config
@@ -112,6 +112,9 @@ class BaseConfig(ArgsConfigTemplate):
     """Base config inherited by all G1 control loops"""
 
     dataset_version: str = "sonic_model12"
+
+    robot_model: Literal["g1_29dof", "g1_23dof"] = "g1_29dof"
+    """G1 model used by the MuJoCo simulation."""
 
     # WBC Configuration
     wbc_version: Literal[tuple(WBC_VERSIONS)] = "sonic_model12"
@@ -295,6 +298,9 @@ class BaseConfig(ArgsConfigTemplate):
         # Resolve interface
         self.interface, self.env_type = resolve_interface(self.interface)
 
+        if self.robot_model == "g1_23dof":
+            self.with_hands = False
+
         # Set default gravity compensation joints if not specified
         if self.gravity_compensation_joints is None:
             self.gravity_compensation_joints = ["arms"]
@@ -314,7 +320,11 @@ class BaseConfig(ArgsConfigTemplate):
         configs_dir = gear_sonic_path / "utils" / "mujoco_sim" / "wbc_configs"
 
         if self.wbc_version == "sonic_model12":
-            config_path = str(configs_dir / "g1_29dof_sonic_model12.yaml")
+            config_name = {
+                "g1_29dof": "g1_29dof_sonic_model12.yaml",
+                "g1_23dof": "g1_23dof_sonic_model12.yaml",
+            }[self.robot_model]
+            config_path = str(configs_dir / config_name)
         else:
             raise ValueError(
                 f"Invalid wbc_version: {self.wbc_version}, please use one of: "

@@ -57,6 +57,11 @@ class UnitreeSdk2Bridge:
 
         self.num_body_motor = config["NUM_MOTORS"]
         self.num_hand_motor = config.get("NUM_HAND_MOTORS", 0)
+        self.motor_slot_map = config.get("MOTOR_SLOT_MAP", list(range(self.num_body_motor)))
+        if len(self.motor_slot_map) != self.num_body_motor:
+            raise ValueError(
+                "MOTOR_SLOT_MAP must contain one SDK motor slot for every simulated motor"
+            )
         self.use_sensor = config["USE_SENSOR"]
 
         self.have_imu_ = False
@@ -172,11 +177,11 @@ class UnitreeSdk2Bridge:
         if self.use_sensor:
             raise NotImplementedError("Sensor data is not implemented yet.")
         else:
-            for i in range(self.num_body_motor):
-                self.low_state.motor_state[i].q = obs["body_q"][i]
-                self.low_state.motor_state[i].dq = obs["body_dq"][i]
-                self.low_state.motor_state[i].ddq = obs["body_ddq"][i]
-                self.low_state.motor_state[i].tau_est = obs["body_tau_est"][i]
+            for joint_index, motor_slot in enumerate(self.motor_slot_map):
+                self.low_state.motor_state[motor_slot].q = obs["body_q"][joint_index]
+                self.low_state.motor_state[motor_slot].dq = obs["body_dq"][joint_index]
+                self.low_state.motor_state[motor_slot].ddq = obs["body_ddq"][joint_index]
+                self.low_state.motor_state[motor_slot].tau_est = obs["body_tau_est"][joint_index]
 
         if self.use_sensor and self.have_frame_sensor_:
             raise NotImplementedError("Frame sensor data is not implemented yet.")
@@ -220,7 +225,7 @@ class UnitreeSdk2Bridge:
 
     def GetAction(self) -> Tuple[np.ndarray, bool, bool]:
         with self.low_cmd_lock:
-            body_q = [self.low_cmd.motor_cmd[i].q for i in range(self.num_body_motor)]
+            body_q = [self.low_cmd.motor_cmd[i].q for i in self.motor_slot_map]
         with self.left_hand_cmd_lock:
             left_hand_q = [self.left_hand_cmd.motor_cmd[i].q for i in range(self.num_hand_motor)]
         with self.right_hand_cmd_lock:

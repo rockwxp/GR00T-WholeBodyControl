@@ -260,28 +260,30 @@ class DefaultEnv:
         body_torques = np.zeros(self.num_body_dof)
         if self.unitree_bridge is not None and self.unitree_bridge.low_cmd:
             for i in range(self.unitree_bridge.num_body_motor):
+                motor_slot = self.unitree_bridge.motor_slot_map[i]
+                motor_cmd = self.unitree_bridge.low_cmd.motor_cmd[motor_slot]
                 if self.unitree_bridge.use_sensor:
                     body_torques[i] = (
-                        self.unitree_bridge.low_cmd.motor_cmd[i].tau
-                        + self.unitree_bridge.low_cmd.motor_cmd[i].kp
-                        * (self.unitree_bridge.low_cmd.motor_cmd[i].q - self.mj_data.sensordata[i])
-                        + self.unitree_bridge.low_cmd.motor_cmd[i].kd
+                        motor_cmd.tau
+                        + motor_cmd.kp
+                        * (motor_cmd.q - self.mj_data.sensordata[i])
+                        + motor_cmd.kd
                         * (
-                            self.unitree_bridge.low_cmd.motor_cmd[i].dq
+                            motor_cmd.dq
                             - self.mj_data.sensordata[i + self.unitree_bridge.num_body_motor]
                         )
                     )
                 else:
                     body_torques[i] = (
-                        self.unitree_bridge.low_cmd.motor_cmd[i].tau
-                        + self.unitree_bridge.low_cmd.motor_cmd[i].kp
+                        motor_cmd.tau
+                        + motor_cmd.kp
                         * (
-                            self.unitree_bridge.low_cmd.motor_cmd[i].q
+                            motor_cmd.q
                             - self.mj_data.qpos[self.body_joint_index[i] + self.qpos_offset - 1]
                         )
-                        + self.unitree_bridge.low_cmd.motor_cmd[i].kd
+                        + motor_cmd.kd
                         * (
-                            self.unitree_bridge.low_cmd.motor_cmd[i].dq
+                            motor_cmd.dq
                             - self.mj_data.qvel[self.body_joint_index[i] + self.qvel_offset - 1]
                         )
                     )
@@ -334,7 +336,8 @@ class DefaultEnv:
         body_qpos = np.zeros(self.num_body_dof)
         if self.unitree_bridge is not None and self.unitree_bridge.low_cmd:
             for i in range(self.unitree_bridge.num_body_motor):
-                body_qpos[i] = self.unitree_bridge.low_cmd.motor_cmd[i].q
+                motor_slot = self.unitree_bridge.motor_slot_map[i]
+                body_qpos[i] = self.unitree_bridge.low_cmd.motor_cmd[motor_slot].q
         return body_qpos
 
     def compute_hand_qpos(self) -> np.ndarray:

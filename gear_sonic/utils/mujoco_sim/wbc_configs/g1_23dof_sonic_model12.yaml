@@ -1,0 +1,121 @@
+ROBOT_TYPE: "g1_23dof"
+ROBOT_SCENE: "gear_sonic/data/robots/g1/g1_23dof.xml"
+
+DOMAIN_ID: 0
+INTERFACE: "lo"
+SIMULATOR: "mujoco"
+
+USE_JOYSTICK: 0
+JOYSTICK_TYPE: "xbox"
+JOYSTICK_DEVICE: 0
+
+FREE_BASE: false
+PRINT_SCENE_INFORMATION: true
+ENABLE_ELASTIC_BAND: true
+
+SIMULATE_DT: 0.005
+VIEWER_DT: 0.02
+REWARD_DT: 0.02
+USE_SENSOR: false
+
+# MuJoCo has 23 contiguous actuators. Unitree LowCmd/LowState retain the
+# canonical 29-DOF hardware slots, so absent waist and wrist axes are skipped.
+MOTOR_SLOT_MAP: [0, 1, 2, 3, 4, 5,
+                 6, 7, 8, 9, 10, 11,
+                 12,
+                 15, 16, 17, 18, 19,
+                 22, 23, 24, 25, 26]
+
+MOTOR2JOINT: [0, 1, 2, 3, 4, 5,
+              6, 7, 8, 9, 10, 11,
+              12,
+              13, 14, 15, 16, 17,
+              18, 19, 20, 21, 22]
+JOINT2MOTOR: [0, 1, 2, 3, 4, 5,
+              6, 7, 8, 9, 10, 11,
+              12,
+              13, 14, 15, 16, 17,
+              18, 19, 20, 21, 22]
+
+UNITREE_LEGGED_CONST:
+  HIGHLEVEL: 0xEE
+  LOWLEVEL: 0xFF
+  TRIGERLEVEL: 0xF0
+  PosStopF: 2146000000.0
+  VelStopF: 16000.0
+  MODE_MACHINE: 5
+  MODE_PR: 0
+
+MOTOR_KP: [150, 150, 150, 200, 40, 40,
+           150, 150, 150, 200, 40, 40,
+           250,
+           100, 100, 40, 40, 20,
+           100, 100, 40, 40, 20]
+MOTOR_KD: [2, 2, 2, 4, 2, 2,
+           2, 2, 2, 4, 2, 2,
+           5,
+           5, 5, 2, 2, 2,
+           5, 5, 2, 2, 2]
+
+WeakMotorJointIndex:
+  left_hip_pitch_joint: 0
+  left_hip_roll_joint: 1
+  left_hip_yaw_joint: 2
+  left_knee_joint: 3
+  left_ankle_pitch_joint: 4
+  left_ankle_roll_joint: 5
+  right_hip_pitch_joint: 6
+  right_hip_roll_joint: 7
+  right_hip_yaw_joint: 8
+  right_knee_joint: 9
+  right_ankle_pitch_joint: 10
+  right_ankle_roll_joint: 11
+  waist_yaw_joint: 12
+  left_shoulder_pitch_joint: 13
+  left_shoulder_roll_joint: 14
+  left_shoulder_yaw_joint: 15
+  left_elbow_joint: 16
+  left_wrist_roll_joint: 17
+  right_shoulder_pitch_joint: 18
+  right_shoulder_roll_joint: 19
+  right_shoulder_yaw_joint: 20
+  right_elbow_joint: 21
+  right_wrist_roll_joint: 22
+
+NUM_MOTORS: 23
+NUM_JOINTS: 23
+NUM_HAND_MOTORS: 0
+NUM_HAND_JOINTS: 0
+NUM_UPPER_BODY_JOINTS: 11
+
+DEFAULT_DOF_ANGLES: [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                     -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                     0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0]
+DEFAULT_MOTOR_ANGLES: [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                       -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                       0.0,
+                       0.0, 0.0, 0.0, 0.0, 0.0,
+                       0.0, 0.0, 0.0, 0.0, 0.0]
+
+motor_pos_lower_limit_list: [-2.5307, -0.5236, -2.7576, -0.087267, -0.87267, -0.2618,
+                             -2.5307, -2.9671, -2.7576, -0.087267, -0.87267, -0.2618,
+                             -2.618,
+                             -3.0892, -1.5882, -2.618, -1.0472, -1.972222054,
+                             -3.0892, -2.2515, -2.618, -1.0472, -1.972222054]
+motor_pos_upper_limit_list: [2.8798, 2.9671, 2.7576, 2.8798, 0.5236, 0.2618,
+                             2.8798, 0.5236, 2.7576, 2.8798, 0.5236, 0.2618,
+                             2.618,
+                             2.6704, 2.2515, 2.618, 2.0944, 1.972222054,
+                             2.6704, 1.5882, 2.618, 2.0944, 1.972222054]
+motor_vel_limit_list: [32.0, 32.0, 32.0, 20.0, 37.0, 37.0,
+                       32.0, 32.0, 32.0, 20.0, 37.0, 37.0,
+                       32.0,
+                       37.0, 37.0, 37.0, 37.0, 37.0,
+                       37.0, 37.0, 37.0, 37.0, 37.0]
+motor_effort_limit_list: [88.0, 88.0, 88.0, 139.0, 50.0, 50.0,
+                          88.0, 88.0, 88.0, 139.0, 50.0, 50.0,
+                          88.0,
+                          25.0, 25.0, 25.0, 25.0, 25.0,
+                          25.0, 25.0, 25.0, 25.0, 25.0]
