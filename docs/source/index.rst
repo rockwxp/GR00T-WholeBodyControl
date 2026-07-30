@@ -92,6 +92,7 @@ Documentation
    tutorials/keyboard
    tutorials/gamepad
    tutorials/zmq
+   tutorials/gem_offline_replay
    tutorials/manager
    tutorials/isaac_teleop_publisher_setup
    tutorials/vr_wholebody_teleop
