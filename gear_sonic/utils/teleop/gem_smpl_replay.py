@@ -102,7 +102,11 @@ def _to_numpy(value: Any, name: str) -> np.ndarray:
 
 def _normalize_pose(value: Any) -> np.ndarray:
     pose = _to_numpy(value, "body_pose")
-    while pose.ndim > 2 and pose.shape[0] == 1:
+    # Preserve [T,21,3] when T == 1; only remove explicit outer batch
+    # dimensions such as [1,T,21,3] or [1,T,63].
+    while pose.ndim > 3 and pose.shape[0] == 1:
+        pose = pose[0]
+    if pose.ndim == 3 and pose.shape[0] == 1 and pose.shape[-1] == 63:
         pose = pose[0]
     if pose.ndim == 3 and pose.shape[-2:] == (21, 3):
         pose = pose.reshape(pose.shape[0], 63)
@@ -122,6 +126,56 @@ def _normalize_vector_sequence(value: Any, name: str, frames: int) -> np.ndarray
     if sequence.shape != (frames, 3):
         raise ValueError(f"{name} must have shape [{frames},3], got {sequence.shape}")
     return np.ascontiguousarray(sequence, dtype=np.float32)
+
+
+def gem_motion_from_params(
+    params: dict[str, Any],
+    *,
+    fps: float | None = None,
+    frame_ids: np.ndarray | None = None,
+) -> GemMotion:
+    """Normalize one GEM SMPL parameter dictionary.
+
+    This accepts both an offline sequence and the one-frame dictionaries
+    returned by GEM's real-time webcam demo.
+    """
+    if not isinstance(params, dict):
+        raise ValueError("GEM parameters must be a dictionary")
+    for required in ("body_pose", "global_orient"):
+        if required not in params:
+            raise ValueError(f"GEM parameters are missing {required!r}")
+
+    body_pose = _normalize_pose(params["body_pose"])
+    global_orient = _normalize_vector_sequence(
+        params["global_orient"], "global_orient", body_pose.shape[0]
+    )
+    transl_value = params.get(
+        "transl", np.zeros((body_pose.shape[0], 3), dtype=np.float32)
+    )
+    transl = _normalize_vector_sequence(transl_value, "transl", body_pose.shape[0])
+
+    if fps is not None:
+        fps = float(fps)
+        if not np.isfinite(fps) or fps <= 0:
+            raise ValueError(f"fps must be positive and finite, got {fps}")
+
+    if frame_ids is not None:
+        frame_ids = np.asarray(frame_ids, dtype=np.int64).reshape(-1)
+        if frame_ids.shape != (body_pose.shape[0],):
+            raise ValueError(
+                f"frame_ids must have shape [{body_pose.shape[0]}], got "
+                f"{frame_ids.shape}"
+            )
+        if np.any(np.diff(frame_ids) <= 0):
+            raise ValueError("frame_ids must be strictly increasing")
+
+    return GemMotion(
+        body_pose=body_pose,
+        global_orient=global_orient,
+        transl=transl,
+        fps=fps,
+        frame_ids=frame_ids,
+    )
 
 
 def load_gem_motion(
@@ -153,24 +207,10 @@ def load_gem_motion(
     params = data[parameter_group]
     if not isinstance(params, dict):
         raise ValueError(f"{parameter_group} must be a dictionary")
-    for required in ("body_pose", "global_orient"):
-        if required not in params:
-            raise ValueError(f"{parameter_group} is missing {required!r}")
-
-    body_pose = _normalize_pose(params["body_pose"])
-    global_orient = _normalize_vector_sequence(
-        params["global_orient"], "global_orient", body_pose.shape[0]
-    )
-    transl_value = params.get("transl", np.zeros((body_pose.shape[0], 3), dtype=np.float32))
-    transl = _normalize_vector_sequence(transl_value, "transl", body_pose.shape[0])
 
     fps = data.get("fps")
     if isinstance(fps, torch.Tensor):
         fps = fps.item()
-    if fps is not None:
-        fps = float(fps)
-        if not np.isfinite(fps) or fps <= 0:
-            raise ValueError(f"fps must be positive and finite, got {fps}")
 
     frame_ids_value = data.get("result_ids")
     frame_ids = None
@@ -178,20 +218,16 @@ def load_gem_motion(
         if isinstance(frame_ids_value, torch.Tensor):
             frame_ids_value = frame_ids_value.detach().cpu().numpy()
         frame_ids = np.asarray(frame_ids_value, dtype=np.int64).reshape(-1)
-        if frame_ids.shape != (body_pose.shape[0],):
-            raise ValueError(
-                f"result_ids must have shape [{body_pose.shape[0]}], got {frame_ids.shape}"
-            )
-        if np.any(np.diff(frame_ids) <= 0):
-            raise ValueError("result_ids must be strictly increasing")
-
-    return GemMotion(
-        body_pose=body_pose,
-        global_orient=global_orient,
-        transl=transl,
-        fps=fps,
-        frame_ids=frame_ids,
-    )
+    try:
+        return gem_motion_from_params(
+            params,
+            fps=fps,
+            frame_ids=frame_ids,
+        )
+    except ValueError as exc:
+        if "frame_ids" in str(exc):
+            raise ValueError(str(exc).replace("frame_ids", "result_ids")) from exc
+        raise
 
 
 def _resample_rotvec_sequence(
