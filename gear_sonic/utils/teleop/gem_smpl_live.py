@@ -127,6 +127,12 @@ class LivePoseBuffer:
                 raise ValueError("live frame timestamps must be strictly increasing")
             self._frames.append(frame)
 
+    def clear(self) -> None:
+        """Discard poses from a lost operator before accepting a new one."""
+
+        with self._lock:
+            self._frames.clear()
+
     def sample(self, now: float) -> tuple[TimedSonicFrame | None, float | None]:
         """Return `(frame, source_age)` or `(None, age)` when input is stale."""
         with self._lock:
@@ -165,6 +171,12 @@ class GemPoseSafetyFilter:
         self.max_joint_jump = float(max_joint_jump)
         self._last_root: np.ndarray | None = None
         self._last_pose: np.ndarray | None = None
+
+    def reset(self) -> None:
+        """Accept the next valid pose as a new continuity baseline."""
+
+        self._last_root = None
+        self._last_pose = None
 
     @staticmethod
     def _rotation_jump(first: np.ndarray, second: np.ndarray) -> np.ndarray:
@@ -238,7 +250,14 @@ class LiveGemSonicPublisher:
         self._error: BaseException | None = None
         self._stream_index = self.window - 1
         self._last_publish_time: float | None = None
+        self._reset_requested = threading.Event()
         self.sent_messages = 0
+
+    def reset_source(self) -> None:
+        """Stop replaying a lost operator and clear interpolation history."""
+
+        self.buffer.clear()
+        self._reset_requested.set()
 
     def submit(self, params: dict, *, timestamp: float | None = None) -> None:
         """Convert and enqueue one new GEM result."""
@@ -306,6 +325,11 @@ class LiveGemSonicPublisher:
             deadline = self.clock()
             stale_reported = False
             while not self._stop.is_set():
+                if self._reset_requested.is_set():
+                    self._history.clear()
+                    self._last_publish_time = None
+                    self._reset_requested.clear()
+                    stale_reported = False
                 now = self.clock()
                 frame, age = self.buffer.sample(now)
                 if frame is not None:

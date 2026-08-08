@@ -73,6 +73,18 @@ def _parse_args() -> argparse.Namespace:
         help="Stop publishing after this many seconds without a new GEM result",
     )
     parser.add_argument(
+        "--reacquire-timeout",
+        type=float,
+        default=0.75,
+        help="Reset pose continuity after this many seconds without an accepted pose",
+    )
+    parser.add_argument(
+        "--acquisition-results",
+        type=int,
+        default=3,
+        help="Require this many consecutive valid GEM results before publishing",
+    )
+    parser.add_argument(
         "--min-visible-keypoints",
         type=int,
         default=8,
@@ -123,6 +135,10 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--interpolation-delay cannot be negative")
     if args.stale_timeout <= 0:
         raise ValueError("--stale-timeout must be positive")
+    if args.reacquire_timeout <= args.stale_timeout:
+        raise ValueError("--reacquire-timeout must be greater than --stale-timeout")
+    if args.acquisition_results < 1:
+        raise ValueError("--acquisition-results must be at least 1")
     if not 0 <= args.min_visible_keypoints <= 17:
         raise ValueError("--min-visible-keypoints must be in [0, 17]")
     if not 0 <= args.min_lower_body_keypoints <= 6:
@@ -202,9 +218,13 @@ def main() -> int:
     last_result_id = None
     submitted_results = 0
     rejected_results = 0
+    acquisition_results = 0
+    active_track_id = None
+    last_accepted_time = None
 
     def process_and_publish(frame_bgr):
         nonlocal last_result_id, submitted_results, rejected_results
+        nonlocal acquisition_results, active_track_id, last_accepted_time
         result = original_process_frame(frame_bgr)
         if result is None or not result.get("ready", False):
             return result
@@ -212,6 +232,26 @@ def main() -> int:
         if result_id is not None and result_id == last_result_id:
             return result
         last_result_id = result_id
+        now = time.monotonic()
+        track_id = getattr(demo, "primary_track_id", None)
+        track_changed = (
+            active_track_id is not None
+            and track_id is not None
+            and track_id != active_track_id
+        )
+        pose_was_stale = (
+            last_accepted_time is not None
+            and now - last_accepted_time > args.reacquire_timeout
+        )
+        if track_changed or pose_was_stale:
+            reason = "operator track changed" if track_changed else "pose stream was stale"
+            safety_filter.reset()
+            publisher.reset_source()
+            acquisition_results = 0
+            print(f"\n[Tracking] Reacquiring operator: {reason}", flush=True)
+        if track_id is not None:
+            active_track_id = track_id
+
         keypoints = getattr(demo, "_last_kp2d", None)
         if keypoints is not None:
             visible = keypoints[:, 2] > 0.5
@@ -227,17 +267,29 @@ def main() -> int:
                     f"keypoints={visible_count}/17, lower-body={lower_body_count}/6",
                     flush=True,
                 )
+                acquisition_results = 0
                 return result
         params = _complete_global_params(result)
         accepted, reason = safety_filter.check(params)
         if not accepted:
             rejected_results += 1
             print(f"\n[Safety] Rejected GEM result {result_id}: {reason}", flush=True)
+            acquisition_results = 0
+            return result
+        last_accepted_time = now
+        acquisition_results += 1
+        if acquisition_results < args.acquisition_results:
+            print(
+                f"\r[Tracking] Confirming operator "
+                f"{acquisition_results}/{args.acquisition_results}",
+                end="",
+                flush=True,
+            )
             return result
         try:
             publisher.submit(
                 params,
-                timestamp=time.monotonic(),
+                timestamp=now,
             )
         except ValueError as exc:
             print(f"\n[Safety] Rejected GEM result {result_id}: {exc}", flush=True)

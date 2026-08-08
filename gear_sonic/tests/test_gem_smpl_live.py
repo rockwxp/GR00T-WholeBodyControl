@@ -68,6 +68,15 @@ class LiveGemSmplTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
             buffer.push(_frame(2.0))
 
+    def test_buffer_clear_removes_pose_from_previous_operator(self):
+        buffer = LivePoseBuffer(interpolation_delay=0.05, stale_timeout=0.3)
+        buffer.push(_frame(2.0))
+        buffer.clear()
+
+        result, age = buffer.sample(2.1)
+        self.assertIsNone(result)
+        self.assertIsNone(age)
+
     def test_pose_safety_filter_rejects_large_rotation_jump(self):
         safety = GemPoseSafetyFilter(max_root_jump=0.5, max_joint_jump=1.0)
 
@@ -90,6 +99,9 @@ class LiveGemSmplTests(unittest.TestCase):
         accepted, reason = safety.check(params(joint_angle=1.1))
         self.assertFalse(accepted)
         self.assertIn("body joint jumped", reason)
+
+        safety.reset()
+        self.assertEqual(safety.check(params(joint_angle=1.1)), (True, None))
 
 
 if __name__ == "__main__":
