@@ -243,14 +243,21 @@ def main() -> int:
             last_accepted_time is not None
             and now - last_accepted_time > args.reacquire_timeout
         )
+        if track_id is not None:
+            active_track_id = track_id
         if track_changed or pose_was_stale:
             reason = "operator track changed" if track_changed else "pose stream was stale"
             safety_filter.reset()
             publisher.reset_source()
             acquisition_results = 0
+            last_accepted_time = None
             print(f"\n[Tracking] Reacquiring operator: {reason}", flush=True)
-        if track_id is not None:
-            active_track_id = track_id
+            reset_context = getattr(demo, "reset_temporal_context", None)
+            if reset_context is not None:
+                reset_context()
+                result["ready"] = False
+                result["warmup"] = "operator-reacquire"
+                return result
 
         keypoints = getattr(demo, "_last_kp2d", None)
         if keypoints is not None:
