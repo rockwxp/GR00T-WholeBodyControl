@@ -77,6 +77,37 @@ class LiveGemSmplTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIsNone(age)
 
+    def test_episode_gate_clears_buffer_when_disabled(self):
+        publisher = LiveGemSonicPublisher(window=5, target_fps=50)
+        publisher.buffer.push(_frame(2.0))
+
+        publisher.set_publishing_enabled(False)
+
+        self.assertFalse(publisher.publishing_enabled)
+        result, age = publisher.buffer.sample(2.1)
+        self.assertIsNone(result)
+        self.assertIsNone(age)
+        publisher.set_publishing_enabled(True)
+        self.assertTrue(publisher.publishing_enabled)
+
+    def test_episode_gate_discards_submissions_while_disabled(self):
+        publisher = LiveGemSonicPublisher(window=5, target_fps=50)
+        publisher.set_publishing_enabled(False)
+
+        submitted = publisher.submit(
+            {
+                "body_pose": np.zeros((1, 21, 3), dtype=np.float32),
+                "global_orient": np.zeros((1, 1, 3), dtype=np.float32),
+                "transl": np.zeros((1, 3), dtype=np.float32),
+            },
+            timestamp=2.0,
+        )
+
+        self.assertFalse(submitted)
+        result, age = publisher.buffer.sample(2.1)
+        self.assertIsNone(result)
+        self.assertIsNone(age)
+
     def test_pose_safety_filter_rejects_large_rotation_jump(self):
         safety = GemPoseSafetyFilter(max_root_jump=0.5, max_joint_jump=1.0)
 

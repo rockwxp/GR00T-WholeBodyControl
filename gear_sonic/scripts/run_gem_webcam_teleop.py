@@ -7,9 +7,12 @@ import argparse
 import importlib
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import ModuleType
+
+import zmq
 
 from gear_sonic.utils.teleop.gem_smpl_live import (
     GemPoseSafetyFilter,
@@ -110,6 +113,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-wrists", action="store_true")
     parser.add_argument(
+        "--publish-control-port",
+        type=int,
+        help="Optional REP port used by the Episode Recorder to gate SONIC output",
+    )
+    parser.add_argument(
+        "--start-publishing-disabled",
+        action="store_true",
+        help="Wait for an Episode start command before sending poses to SONIC",
+    )
+    parser.add_argument(
         "--no-wait",
         action="store_true",
         help="Start camera capture without waiting for Enter",
@@ -145,6 +158,78 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-lower-body-keypoints must be in [0, 6]")
     if args.max_root_jump <= 0 or args.max_joint_jump <= 0:
         raise ValueError("--max-root-jump and --max-joint-jump must be positive")
+    if args.publish_control_port is not None and not 1 <= args.publish_control_port <= 65535:
+        raise ValueError("--publish-control-port must be in [1, 65535]")
+    if args.start_publishing_disabled and args.publish_control_port is None:
+        raise ValueError(
+            "--start-publishing-disabled requires --publish-control-port"
+        )
+
+
+class PublishControlServer:
+    """Serve recorder requests that open and close the GENMO output gate."""
+
+    def __init__(self, publisher: LiveGemSonicPublisher, port: int) -> None:
+        self.publisher = publisher
+        self.port = int(port)
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="gem-publish-control", daemon=True
+        )
+        self._error: BaseException | None = None
+
+    def start(self, timeout: float = 5.0) -> None:
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            raise TimeoutError("timed out waiting for publish control to bind")
+        if self._error is not None:
+            raise RuntimeError("publish control failed to start") from self._error
+
+    def _run(self) -> None:
+        context = zmq.Context()
+        socket = context.socket(zmq.REP)
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.setsockopt(zmq.RCVTIMEO, 100)
+        try:
+            socket.bind(f"tcp://*:{self.port}")
+            self._ready.set()
+            while not self._stop.is_set():
+                try:
+                    request = socket.recv_json()
+                except zmq.Again:
+                    continue
+                command = request.get("command")
+                if command == "enable":
+                    self.publisher.set_publishing_enabled(True)
+                    response = {"ok": True, "publishing": True}
+                elif command == "disable":
+                    self.publisher.set_publishing_enabled(False)
+                    response = {"ok": True, "publishing": False}
+                elif command == "status":
+                    response = {
+                        "ok": True,
+                        "publishing": self.publisher.publishing_enabled,
+                    }
+                else:
+                    response = {
+                        "ok": False,
+                        "error": f"unknown publish control command: {command!r}",
+                    }
+                socket.send_json(response)
+        except BaseException as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            socket.close(linger=0)
+            context.term()
+
+    def close(self) -> None:
+        self.publisher.set_publishing_enabled(False)
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        if self._error is not None:
+            raise RuntimeError("publish control stopped after an error") from self._error
 
 
 def _load_gem_webcam_module(genmo_root: Path) -> ModuleType:
@@ -188,6 +273,8 @@ def _complete_global_params(result: dict) -> dict:
 
 def main() -> int:
     args = _parse_args()
+    control_server = None
+    publisher = None
     try:
         _validate_args(args)
         genmo_root = args.genmo_root.resolve()
@@ -209,8 +296,19 @@ def main() -> int:
             max_root_jump=args.max_root_jump,
             max_joint_jump=args.max_joint_jump,
         )
+        if args.start_publishing_disabled:
+            publisher.set_publishing_enabled(False)
         publisher.start()
-    except (FileNotFoundError, ImportError, RuntimeError, ValueError) as exc:
+        if args.publish_control_port is not None:
+            control_server = PublishControlServer(
+                publisher, args.publish_control_port
+            )
+            control_server.start()
+    except (FileNotFoundError, ImportError, OSError, RuntimeError, ValueError) as exc:
+        if control_server is not None:
+            control_server.close()
+        elif publisher is not None:
+            publisher.close()
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -294,7 +392,7 @@ def main() -> int:
             )
             return result
         try:
-            publisher.submit(
+            submitted = publisher.submit(
                 params,
                 timestamp=now,
             )
@@ -302,7 +400,8 @@ def main() -> int:
             print(f"\n[Safety] Rejected GEM result {result_id}: {exc}", flush=True)
             rejected_results += 1
             return result
-        submitted_results += 1
+        if submitted:
+            submitted_results += 1
         return result
 
     demo.process_frame = process_and_publish
@@ -314,6 +413,12 @@ def main() -> int:
         f"[Safety] New GEM results older than {args.stale_timeout * 1000:.0f} ms "
         "stop pose publication automatically."
     )
+    if control_server is not None:
+        state = "disabled" if args.start_publishing_disabled else "enabled"
+        print(
+            f"[Episode] Publish control ready on tcp://*:{args.publish_control_port}; "
+            f"SONIC output starts {state}."
+        )
     try:
         if not args.no_wait:
             input(
@@ -326,6 +431,8 @@ def main() -> int:
         print("\n[Interrupted]")
         return 130
     finally:
+        if control_server is not None:
+            control_server.close()
         publisher.close()
         print(
             f"[SONIC] Stopped after {submitted_results} GEM results and "

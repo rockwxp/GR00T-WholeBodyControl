@@ -251,6 +251,9 @@ class LiveGemSonicPublisher:
         self._stream_index = self.window - 1
         self._last_publish_time: float | None = None
         self._reset_requested = threading.Event()
+        self._publishing_enabled = threading.Event()
+        self._publishing_enabled.set()
+        self._publish_gate_lock = threading.Lock()
         self.sent_messages = 0
 
     def reset_source(self) -> None:
@@ -259,16 +262,41 @@ class LiveGemSonicPublisher:
         self.buffer.clear()
         self._reset_requested.set()
 
-    def submit(self, params: dict, *, timestamp: float | None = None) -> None:
-        """Convert and enqueue one new GEM result."""
-        timestamp = self.clock() if timestamp is None else float(timestamp)
-        self.buffer.push(
-            convert_live_gem_frame(
-                params,
-                timestamp=timestamp,
-                include_wrists=self.include_wrists,
+    @property
+    def publishing_enabled(self) -> bool:
+        """Return whether accepted GEM poses may be sent to SONIC."""
+
+        return self._publishing_enabled.is_set()
+
+    def set_publishing_enabled(self, enabled: bool) -> None:
+        """Open or close the output gate without stopping GEM inference.
+
+        Closing the gate also removes the last pose and interpolation history.
+        This prevents the publisher thread from repeating a pre-Episode pose and
+        makes the next Episode begin only after a fresh GEM result arrives.
+        """
+
+        with self._publish_gate_lock:
+            if enabled:
+                self._publishing_enabled.set()
+            else:
+                self._publishing_enabled.clear()
+                self.reset_source()
+
+    def submit(self, params: dict, *, timestamp: float | None = None) -> bool:
+        """Convert one GEM result, returning whether the output gate accepted it."""
+        with self._publish_gate_lock:
+            if not self._publishing_enabled.is_set():
+                return False
+            timestamp = self.clock() if timestamp is None else float(timestamp)
+            self.buffer.push(
+                convert_live_gem_frame(
+                    params,
+                    timestamp=timestamp,
+                    include_wrists=self.include_wrists,
+                )
             )
-        )
+            return True
 
     def _batch(self, frame: TimedSonicFrame) -> dict[str, np.ndarray]:
         previous = self._history[-1][0] if self._history else None
@@ -331,22 +359,38 @@ class LiveGemSonicPublisher:
                     self._reset_requested.clear()
                     stale_reported = False
                 now = self.clock()
-                frame, age = self.buffer.sample(now)
-                if frame is not None:
-                    if (
-                        self._last_publish_time is not None
-                        and now - self._last_publish_time > self.buffer.stale_timeout
-                    ):
-                        # Do not mix a pre-dropout pose into the recovered
-                        # rolling window or derive a large synthetic velocity.
-                        self._history.clear()
-                    socket.send(
-                        pack_pose_message(self._batch(frame), topic=self.topic, version=3)
+                with self._publish_gate_lock:
+                    publishing_enabled = self._publishing_enabled.is_set()
+                    frame, age = (
+                        self.buffer.sample(now)
+                        if publishing_enabled
+                        else (None, None)
                     )
-                    self._last_publish_time = now
-                    self.sent_messages += 1
-                    stale_reported = False
-                elif age is not None and not stale_reported:
+                    if frame is not None:
+                        if (
+                            self._last_publish_time is not None
+                            and now - self._last_publish_time > self.buffer.stale_timeout
+                        ):
+                            # Do not mix a pre-dropout pose into the recovered
+                            # rolling window or derive a large synthetic velocity.
+                            self._history.clear()
+                        socket.send(
+                            pack_pose_message(
+                                self._batch(frame), topic=self.topic, version=3
+                            )
+                        )
+                        self._last_publish_time = now
+                        self.sent_messages += 1
+                        stale_reported = False
+                if not publishing_enabled:
+                    deadline += period
+                    remaining = deadline - self.clock()
+                    if remaining > 0:
+                        self._stop.wait(remaining)
+                    else:
+                        deadline = self.clock()
+                    continue
+                if frame is None and age is not None and not stale_reported:
                     print(
                         f"\n[Safety] GEM pose is stale ({age * 1000:.0f} ms); "
                         "stopped publishing until tracking recovers.",
