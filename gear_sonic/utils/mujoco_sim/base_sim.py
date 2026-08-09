@@ -183,7 +183,11 @@ class DefaultEnv:
 
         # Enable the elastic band
         if self.config["ENABLE_ELASTIC_BAND"] and self.use_floating_root_link:
-            self.elastic_band = ElasticBand()
+            self.elastic_band = ElasticBand(
+                deferred_release=self.config.get(
+                    "DETERMINISTIC_ELASTIC_RELEASE", False
+                )
+            )
             if "g1" in self.config["ROBOT_TYPE"]:
                 if self.config["enable_waist"]:
                     self.band_attached_link = self.mj_model.body("pelvis").id
@@ -387,6 +391,8 @@ class DefaultEnv:
         return obs
 
     def sim_step(self):
+        if self.elastic_band and self.elastic_band.consume_release_request():
+            self._complete_elastic_band_release()
         self.obs = self.prepare_obs()
         self.unitree_bridge.PublishLowState(self.obs)
         if self.unitree_bridge.joystick:
@@ -428,8 +434,49 @@ class DefaultEnv:
         else:
             self.mj_data.ctrl = self.torques
         mujoco.mj_step(self.mj_model, self.mj_data)
-
         self.check_fall()
+
+    def _complete_elastic_band_release(self):
+        """Release G1 from a configured repeatable root pose with zero momentum."""
+
+        if self.config.get("DETERMINISTIC_ELASTIC_RELEASE", False):
+            root_position = np.asarray(
+                self.config.get("ELASTIC_RELEASE_ROOT_POSITION", [0.0, 0.0, 0.793]),
+                dtype=np.float64,
+            )
+            root_quaternion = np.asarray(
+                self.config.get(
+                    "ELASTIC_RELEASE_ROOT_QUATERNION", [1.0, 0.0, 0.0, 0.0]
+                ),
+                dtype=np.float64,
+            )
+            if root_position.shape != (3,) or root_quaternion.shape != (4,):
+                raise ValueError("deterministic elastic release requires xyz and wxyz")
+            norm = float(np.linalg.norm(root_quaternion))
+            if norm <= 0:
+                raise ValueError("deterministic elastic release quaternion is zero")
+            self.mj_data.qpos[:3] = root_position
+            self.mj_data.qpos[3:7] = root_quaternion / norm
+            zero_velocity = self.config.get(
+                "ELASTIC_RELEASE_ZERO_ROBOT_VELOCITY", True
+            )
+            if zero_velocity:
+                robot_velocity_count = (
+                    self.qvel_offset + self.num_body_dof + 2 * self.num_hand_dof
+                )
+                self.mj_data.qvel[:robot_velocity_count] = 0.0
+                self.mj_data.qacc[:robot_velocity_count] = 0.0
+                self.mj_data.qacc_warmstart[:robot_velocity_count] = 0.0
+            self.mj_data.xfrc_applied[self.band_attached_link] = np.zeros(6)
+            mujoco.mj_forward(self.mj_model, self.mj_data)
+            print(
+                "Deterministic G1 release: "
+                f"root=({root_position[0]:.3f}, {root_position[1]:.3f}, "
+                f"{root_position[2]:.3f}), robot velocity="
+                f"{'0' if zero_velocity else 'preserved'}"
+            )
+        self.elastic_band.enable = False
+        print("ElasticBand enable: False")
 
     def apply_perturbation(self, key):
         perturbation_x_body = 0.0

@@ -368,7 +368,7 @@ class ElasticBand:
     ref: https://github.com/unitreerobotics/unitree_mujoco
     """
 
-    def __init__(self):
+    def __init__(self, deferred_release=False):
         self.kp_pos = 10000
         self.kd_pos = 1000
         self.kp_ang = 1000
@@ -376,6 +376,26 @@ class ElasticBand:
         self.point = np.array([0, 0, 1])
         self.length = 0
         self.enable = True
+        self.deferred_release = bool(deferred_release)
+        self._release_requested = threading.Event()
+
+    def toggle(self):
+        """Enable immediately or request a simulation-thread release."""
+
+        if self.enable and self.deferred_release:
+            self._release_requested.set()
+            print("ElasticBand deterministic release requested")
+            return
+        self.enable = not self.enable
+        print(f"ElasticBand enable: {self.enable}")
+
+    def consume_release_request(self):
+        """Return one pending release request to the simulation thread."""
+
+        if not self._release_requested.is_set():
+            return False
+        self._release_requested.clear()
+        return True
 
     def Advance(self, pose):
         pos = pose[0:3]
@@ -402,9 +422,8 @@ class ElasticBand:
         if key == glfw.KEY_8:
             self.length += 0.1
         if key == glfw.KEY_9:
-            self.enable = not self.enable
+            self.toggle()
 
     def handle_keyboard_button(self, key):
         if key == "9":
-            self.enable = not self.enable
-            print(f"ElasticBand enable: {self.enable}")
+            self.toggle()
