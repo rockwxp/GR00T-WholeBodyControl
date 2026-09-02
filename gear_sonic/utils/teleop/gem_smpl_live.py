@@ -17,7 +17,10 @@ from gear_sonic.utils.teleop.gem_smpl_replay import (
     convert_to_sonic,
     gem_motion_from_params,
 )
-from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
+from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (
+    build_command_message,
+    pack_pose_message,
+)
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,11 @@ class LiveGemSonicPublisher:
         self._publishing_enabled = threading.Event()
         self._publishing_enabled.set()
         self._publish_gate_lock = threading.Lock()
+        self._command_condition = threading.Condition()
+        self._pending_commands: deque[tuple[int, bytes, bool]] = deque()
+        self._next_command_id = 1
+        self._last_sent_command_id = 0
+        self._sonic_streaming_requested = False
         self.sent_messages = 0
 
     def reset_source(self) -> None:
@@ -297,6 +305,52 @@ class LiveGemSonicPublisher:
                 )
             )
             return True
+
+    def set_sonic_streaming_enabled(
+        self,
+        enabled: bool,
+        *,
+        timeout: float = 1.0,
+        repeat: int = 3,
+    ) -> None:
+        """Idempotently request SONIC streamed-motion or planner mode.
+
+        The command uses the same PUB socket as pose data because ZeroMQ sockets
+        are thread-affine. Repeating the idempotent command protects the Episode
+        boundary from a transient PUB/SUB delivery loss.
+        """
+
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if repeat < 1:
+            raise ValueError("repeat must be at least one")
+        message = build_command_message(
+            start=False,
+            stop=False,
+            planner=not enabled,
+        )
+        with self._command_condition:
+            command_id = self._next_command_id
+            self._next_command_id += 1
+            for index in range(repeat):
+                self._pending_commands.append(
+                    (command_id, message, index == repeat - 1)
+                )
+            deadline = self.clock() + timeout
+            while self._last_sent_command_id < command_id:
+                if self._stop.is_set():
+                    raise RuntimeError("publisher stopped before sending SONIC command")
+                remaining = deadline - self.clock()
+                if remaining <= 0 or not self._command_condition.wait(remaining):
+                    raise TimeoutError("timed out sending SONIC streaming command")
+            self._sonic_streaming_requested = bool(enabled)
+
+    @property
+    def sonic_streaming_requested(self) -> bool:
+        """Return the most recent streamed-motion mode requested from SONIC."""
+
+        with self._command_condition:
+            return self._sonic_streaming_requested
 
     def _batch(self, frame: TimedSonicFrame) -> dict[str, np.ndarray]:
         previous = self._history[-1][0] if self._history else None
@@ -353,6 +407,17 @@ class LiveGemSonicPublisher:
             deadline = self.clock()
             stale_reported = False
             while not self._stop.is_set():
+                pending_command = None
+                with self._command_condition:
+                    if self._pending_commands:
+                        pending_command = self._pending_commands.popleft()
+                if pending_command is not None:
+                    command_id, message, is_last_repeat = pending_command
+                    socket.send(message)
+                    if is_last_repeat:
+                        with self._command_condition:
+                            self._last_sent_command_id = command_id
+                            self._command_condition.notify_all()
                 if self._reset_requested.is_set():
                     self._history.clear()
                     self._last_publish_time = None
@@ -412,6 +477,8 @@ class LiveGemSonicPublisher:
 
     def close(self) -> None:
         self._stop.set()
+        with self._command_condition:
+            self._command_condition.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         if self._error is not None:

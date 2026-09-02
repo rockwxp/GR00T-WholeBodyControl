@@ -166,11 +166,45 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
 
 
-class PublishControlServer:
-    """Serve recorder requests that open and close the GENMO output gate."""
+class InferenceReadiness:
+    """Expose whether continuous GEM inference has a safe current operator."""
 
-    def __init__(self, publisher: LiveGemSonicPublisher, port: int) -> None:
+    def __init__(self) -> None:
+        self._ready = threading.Event()
+
+    @property
+    def ready(self) -> bool:
+        """Return whether a fresh, safety-accepted GEM result is available."""
+
+        return self._ready.is_set()
+
+    def wait_until_ready(self, timeout: float) -> bool:
+        """Wait until the live capture loop accepts an operator pose."""
+
+        return self._ready.wait(timeout)
+
+    def mark_ready(self) -> None:
+        """Signal that publication may safely start at an Episode boundary."""
+
+        self._ready.set()
+
+    def mark_not_ready(self) -> None:
+        """Prevent a new Episode from starting from invalid or stale tracking."""
+
+        self._ready.clear()
+
+
+class PublishControlServer:
+    """Serve Episode requests while continuous GEM inference stays live."""
+
+    def __init__(
+        self,
+        publisher: LiveGemSonicPublisher,
+        inference_readiness: InferenceReadiness,
+        port: int,
+    ) -> None:
         self.publisher = publisher
+        self.inference_readiness = inference_readiness
         self.port = int(port)
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -199,22 +233,16 @@ class PublishControlServer:
                     request = socket.recv_json()
                 except zmq.Again:
                     continue
-                command = request.get("command")
-                if command == "enable":
-                    self.publisher.set_publishing_enabled(True)
-                    response = {"ok": True, "publishing": True}
-                elif command == "disable":
-                    self.publisher.set_publishing_enabled(False)
-                    response = {"ok": True, "publishing": False}
-                elif command == "status":
-                    response = {
-                        "ok": True,
-                        "publishing": self.publisher.publishing_enabled,
-                    }
-                else:
+                try:
+                    response = self._handle_request(request)
+                except (RuntimeError, TimeoutError, TypeError, ValueError) as exc:
                     response = {
                         "ok": False,
-                        "error": f"unknown publish control command: {command!r}",
+                        "error": str(exc),
+                        "publishing": self.publisher.publishing_enabled,
+                        "sonic_streaming_requested": (
+                            self.publisher.sonic_streaming_requested
+                        ),
                     }
                 socket.send_json(response)
         except BaseException as exc:
@@ -223,6 +251,70 @@ class PublishControlServer:
         finally:
             socket.close(linger=0)
             context.term()
+
+    def _handle_request(self, request: dict) -> dict:
+        """Apply one lifecycle request without terminating the control service."""
+
+        command = request.get("command")
+        if command == "prepare":
+            timeout = float(request.get("timeout_seconds", 20.0))
+            if timeout <= 0:
+                raise ValueError("timeout_seconds must be positive")
+            self.publisher.set_publishing_enabled(False)
+            self.publisher.set_sonic_streaming_enabled(False)
+            if not self.inference_readiness.wait_until_ready(timeout):
+                return {
+                    "ok": False,
+                    "error": "GENMO did not become ready before the timeout",
+                    "publishing": False,
+                    "sonic_streaming_requested": False,
+                    "inference": "not_ready",
+                }
+            return {
+                "ok": True,
+                "publishing": False,
+                "sonic_streaming_requested": False,
+                "inference": "ready",
+            }
+        if command == "enable":
+            if not self.inference_readiness.ready:
+                return {
+                    "ok": False,
+                    "error": "GENMO inference is not prepared",
+                }
+            self.publisher.set_sonic_streaming_enabled(True)
+            time.sleep(0.1)
+            self.publisher.set_publishing_enabled(True)
+            return {
+                "ok": True,
+                "publishing": True,
+                "sonic_streaming_requested": True,
+                "inference": "ready",
+            }
+        if command == "disable":
+            self.publisher.set_publishing_enabled(False)
+            self.publisher.set_sonic_streaming_enabled(False)
+            return {
+                "ok": True,
+                "publishing": False,
+                "sonic_streaming_requested": False,
+                "inference": (
+                    "ready" if self.inference_readiness.ready else "not_ready"
+                ),
+            }
+        if command == "status":
+            return {
+                "ok": True,
+                "publishing": self.publisher.publishing_enabled,
+                "sonic_streaming_requested": self.publisher.sonic_streaming_requested,
+                "inference": (
+                    "ready" if self.inference_readiness.ready else "not_ready"
+                ),
+            }
+        return {
+            "ok": False,
+            "error": f"unknown publish control command: {command!r}",
+        }
 
     def close(self) -> None:
         self.publisher.set_publishing_enabled(False)
@@ -296,12 +388,13 @@ def main() -> int:
             max_root_jump=args.max_root_jump,
             max_joint_jump=args.max_joint_jump,
         )
+        inference_readiness = InferenceReadiness()
         if args.start_publishing_disabled:
             publisher.set_publishing_enabled(False)
         publisher.start()
         if args.publish_control_port is not None:
             control_server = PublishControlServer(
-                publisher, args.publish_control_port
+                publisher, inference_readiness, args.publish_control_port
             )
             control_server.start()
     except (FileNotFoundError, ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -325,6 +418,11 @@ def main() -> int:
         nonlocal acquisition_results, active_track_id, last_accepted_time
         result = original_process_frame(frame_bgr)
         if result is None or not result.get("ready", False):
+            if (
+                last_accepted_time is not None
+                and time.monotonic() - last_accepted_time > args.reacquire_timeout
+            ):
+                inference_readiness.mark_not_ready()
             return result
         result_id = result.get("_result_id")
         if result_id is not None and result_id == last_result_id:
@@ -347,6 +445,7 @@ def main() -> int:
             reason = "operator track changed" if track_changed else "pose stream was stale"
             safety_filter.reset()
             publisher.reset_source()
+            inference_readiness.mark_not_ready()
             acquisition_results = 0
             last_accepted_time = None
             print(f"\n[Tracking] Reacquiring operator: {reason}", flush=True)
@@ -367,6 +466,7 @@ def main() -> int:
                 or lower_body_count < args.min_lower_body_keypoints
             ):
                 rejected_results += 1
+                inference_readiness.mark_not_ready()
                 print(
                     f"\n[Safety] Rejected GEM result {result_id}: visible "
                     f"keypoints={visible_count}/17, lower-body={lower_body_count}/6",
@@ -378,6 +478,7 @@ def main() -> int:
         accepted, reason = safety_filter.check(params)
         if not accepted:
             rejected_results += 1
+            inference_readiness.mark_not_ready()
             print(f"\n[Safety] Rejected GEM result {result_id}: {reason}", flush=True)
             acquisition_results = 0
             return result
@@ -391,6 +492,7 @@ def main() -> int:
                 flush=True,
             )
             return result
+        inference_readiness.mark_ready()
         try:
             submitted = publisher.submit(
                 params,
@@ -417,7 +519,7 @@ def main() -> int:
         state = "disabled" if args.start_publishing_disabled else "enabled"
         print(
             f"[Episode] Publish control ready on tcp://*:{args.publish_control_port}; "
-            f"SONIC output starts {state}."
+            f"SONIC output starts {state}; GEM inference remains live."
         )
     try:
         if not args.no_wait:

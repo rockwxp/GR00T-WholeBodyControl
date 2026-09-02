@@ -168,6 +168,12 @@ class ZMQManager : public InputInterface {
       while (ReadStdinChar(ch)) {
         bool is_manager_key = false;
         switch (ch) {
+          case ']':
+            // Starting the controller is global. Collection begins in planner
+            // mode and switches to streamed motion only at an Episode boundary.
+            start_control_ = true;
+            is_manager_key = true;
+            break;
           case 'o':
           case 'O':
             emergency_stop_ = true;
