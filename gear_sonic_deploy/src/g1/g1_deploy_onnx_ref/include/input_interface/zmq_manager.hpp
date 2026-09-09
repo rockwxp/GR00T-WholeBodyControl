@@ -408,6 +408,13 @@ class ZMQManager : public InputInterface {
       return has_external_token_state_;
     }
 
+    std::uint64_t GetExternalTokenResetGeneration() const override {
+      if (pose_interface_) {
+        return pose_interface_->GetExternalTokenResetGeneration();
+      }
+      return InputInterface::GetExternalTokenResetGeneration();
+    }
+
     std::pair<bool, std::array<double, 9>> GetVR3PointPosition() const override {
       if ((active_mode_ == ManagedMode::STREAMED_MOTION || (!is_planner_ready_ && switch_from_teleop_to_planner_)) && pose_interface_) {
         return pose_interface_->GetVR3PointPosition();

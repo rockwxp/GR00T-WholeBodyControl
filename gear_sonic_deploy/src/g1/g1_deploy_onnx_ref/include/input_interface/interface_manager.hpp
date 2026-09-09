@@ -233,6 +233,13 @@ class InterfaceManager : public InputInterface {
       }
       return has_external_token_state_;
     }
+
+    std::uint64_t GetExternalTokenResetGeneration() const override {
+      if (current_) {
+        return current_->GetExternalTokenResetGeneration();
+      }
+      return InputInterface::GetExternalTokenResetGeneration();
+    }
     
     std::pair<bool, std::array<double, 9>> GetVR3PointPosition() const override {
       if (current_) {
@@ -392,5 +399,4 @@ class InterfaceManager : public InputInterface {
 };
 
 #endif // INTERFACE_MANAGER_HPP
-
 

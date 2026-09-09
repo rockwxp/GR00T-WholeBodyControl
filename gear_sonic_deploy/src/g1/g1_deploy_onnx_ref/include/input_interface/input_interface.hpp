@@ -31,6 +31,7 @@
 
 #include <unistd.h>
 #include <atomic>
+#include <cstdint>
 #include <queue>
 #include <memory>
 #include <optional>
@@ -155,6 +156,18 @@ public:
         return {true, *buffered_data.data};
       }
       return {false, {}};
+    }
+
+    /**
+     * @brief Monotonic generation number for the external-token lifecycle.
+     *
+     * A concrete interface increments this value whenever its stream is
+     * enabled, disabled, or reset for safety. The control core observes the
+     * change and clears its own cached token state. This prevents a token from
+     * the previous rollout from surviving an interface reset.
+     */
+    virtual std::uint64_t GetExternalTokenResetGeneration() const {
+      return external_token_reset_generation_.load(std::memory_order_acquire);
     }
     
     // ------------------------------------------------------------------
@@ -448,6 +461,11 @@ protected:
     /// Protected default constructor – only concrete sub-classes may instantiate.
     InputInterface() = default;
 
+    /// Notify the control core that all cached external-token state is invalid.
+    void RequestExternalTokenReset() {
+      external_token_reset_generation_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     // Non-copyable, non-movable (instances are managed via unique_ptr).
     InputInterface(const InputInterface&) = delete;
     InputInterface& operator=(const InputInterface&) = delete;
@@ -462,6 +480,7 @@ protected:
     std::atomic<bool> has_vr_5point_control_{false};  ///< VR 5-point tracking available.
     std::atomic<bool> has_hand_joints_{false};        ///< Dex3 hand joint data available.
     std::atomic<bool> has_external_token_state_{false}; ///< External token-state vector available.
+    std::atomic<std::uint64_t> external_token_reset_generation_{0}; ///< Token lifecycle generation.
     std::atomic<bool> has_upper_body_control_{false}; ///< Upper-body 17-DOF targets available.
 
     // ------------------------------------------------------------------

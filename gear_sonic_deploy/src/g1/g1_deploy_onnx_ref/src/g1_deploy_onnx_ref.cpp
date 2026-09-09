@@ -202,6 +202,7 @@ class G1Deploy {
     std::array<double, 17> upper_body_joint_positions_buffer_;
     std::array<double, 17> upper_body_joint_velocities_buffer_;
     std::vector<double> token_state_data_;  // Token buffer (size from config)
+    std::uint64_t external_token_reset_generation_ = 0;  // Last interface reset observed by the control core.
     
     // =========================================================================
     // Motion data, current motion, and recording
@@ -2974,6 +2975,19 @@ class G1Deploy {
       std::tie(has_upper_body_data_, upper_body_joint_positions_buffer_) = input_interface_->GetUpperBodyJointPositions();
       std::tie(std::ignore, upper_body_joint_velocities_buffer_) = input_interface_->GetUpperBodyJointVelocities();
 
+      // Interface buffers and the control core own separate copies of the
+      // external token. Clear the core copy whenever the interface starts a
+      // new stream lifecycle so a previous rollout cannot leak into the next.
+      const auto token_reset_generation = input_interface_->GetExternalTokenResetGeneration();
+      if (token_reset_generation != external_token_reset_generation_) {
+        external_token_reset_generation_ = token_reset_generation;
+        token_state_data_.assign(token_state_data_.size(), 0.0);
+        first_token_received_ = false;
+        last_token_time_.reset();
+        is_using_encoder_ = initial_encoder_mode_ >= 0;
+        std::cout << "[Token Safety] External token lifecycle reset; cached token cleared." << std::endl;
+      }
+
       auto last_update_time = input_interface_->GetLastUpdateTime();
       if (last_update_time.has_value()) {
         auto streaming_data_delay = std::chrono::steady_clock::now() - last_update_time.value();
@@ -4468,4 +4482,3 @@ int main(int argc, char const* argv[]) {
   std::cout << "[DEBUG] Program exiting normally..." << std::endl;
   return 0;
 }
-

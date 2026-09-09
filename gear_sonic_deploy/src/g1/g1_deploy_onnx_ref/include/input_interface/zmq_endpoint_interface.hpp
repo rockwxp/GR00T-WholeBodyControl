@@ -247,6 +247,7 @@ public:
         std::cerr << "✗✗✗ This is not allowed. Exiting ZMQ streaming mode for safety." << std::endl;
 
         use_zmq_stream = false;
+        RequestExternalTokenReset();
 
         {
             std::lock_guard<std::mutex> lock(current_motion_mutex);
@@ -583,9 +584,15 @@ public:
     }
     
 private:
+    std::optional<int64_t> last_stream_generation_;
+
     /// Reset the streamed motion buffer, merger state, and protocol version.
     /// Called on construction, when toggling ZMQ mode, and on safety reset.
     void ResetStreamedMotion() {
+        has_external_token_state_ = false;
+        external_token_state_.SetData({});
+        RequestExternalTokenReset();
+        last_stream_generation_.reset();
         motion_merger_.Reset();
         active_protocol_version_ = -1;  // Reset protocol version tracking
         // Update legacy fields for backward compatibility
@@ -649,6 +656,7 @@ private:
         int joint_pos_idx = -1, joint_vel_idx = -1, body_quat_idx = -1, frame_index_idx = -1, smpl_joints_idx = -1, smpl_pose_idx = -1;
         int left_hand_joints_idx = -1, right_hand_joints_idx = -1, catch_up_idx = -1;
         int token_state_idx = -1;  // Protocol v4: token-only streaming
+        int stream_generation_idx = -1;  // Protocol v4: rollout lifecycle identifier
         int heading_increment_idx = -1;
         int timestamp_monotonic_idx = -1;
         // VR 3-point tracking fields (optional)
@@ -666,6 +674,7 @@ private:
             else if (f.name == "right_hand_joints") right_hand_joints_idx = static_cast<int>(i);
             else if (f.name == "catch_up") catch_up_idx = static_cast<int>(i);
             else if (f.name == "token_state") token_state_idx = static_cast<int>(i);
+            else if (f.name == "stream_generation") stream_generation_idx = static_cast<int>(i);
             else if (f.name == "heading_increment") heading_increment_idx = static_cast<int>(i);
             else if (f.name == "timestamp_monotonic") timestamp_monotonic_idx = static_cast<int>(i);
             // VR 3-point tracking fields
@@ -709,6 +718,27 @@ private:
             
             std::vector<double> token_data(token_dim);
             bool needs_swap = buffered_header_.NeedsByteSwap();
+
+            // A new online-policy rollout must invalidate every cached token,
+            // including the independent copy owned by the control core.
+            if (stream_generation_idx >= 0) {
+                const auto& generation_field = buffered_header_.fields[static_cast<size_t>(stream_generation_idx)];
+                const auto& generation_buf = buffered_buffers_[static_cast<size_t>(stream_generation_idx)];
+                if (generation_field.dtype != "i64" || generation_buf.size() < sizeof(int64_t)) {
+                    std::cerr << "[ZMQEndpointInterface] Version 4: invalid stream_generation field" << std::endl;
+                    return result;
+                }
+                int64_t stream_generation;
+                std::memcpy(&stream_generation, generation_buf.data(), sizeof(int64_t));
+                if (needs_swap) stream_generation = byte_swap(stream_generation);
+                if (!last_stream_generation_.has_value() ||
+                    last_stream_generation_.value() != stream_generation) {
+                    last_stream_generation_ = stream_generation;
+                    RequestExternalTokenReset();
+                    std::cout << "[Token Safety] New stream generation " << stream_generation
+                              << "; previous rollout token invalidated." << std::endl;
+                }
+            }
             
             if (token_field.dtype == "f32") {
                 for (size_t i = 0; i < token_dim; ++i) {
