@@ -28,6 +28,7 @@ class DeterministicElasticReleaseTests(unittest.TestCase):
             "DETERMINISTIC_ELASTIC_RELEASE": True,
             "ELASTIC_RELEASE_ROOT_POSITION": [0.0, 0.0, 0.793],
             "ELASTIC_RELEASE_ROOT_QUATERNION": [1.0, 0.0, 0.0, 0.0],
+            "ELASTIC_RELEASE_BODY_JOINT_POSITIONS": [0.01] * 29,
             "ELASTIC_RELEASE_ZERO_ROBOT_VELOCITY": True,
         }
         env.mj_model = mujoco.MjModel.from_xml_path(str(MODEL))
@@ -37,6 +38,7 @@ class DeterministicElasticReleaseTests(unittest.TestCase):
         env.mj_data.qacc[:] = 0.25
         env.mj_data.qacc_warmstart[:] = 0.125
         env.qvel_offset = 6
+        env.qpos_offset = 7
         env.num_body_dof = 29
         env.num_hand_dof = 7
         env.band_attached_link = env.mj_model.body("torso_link").id
@@ -46,6 +48,7 @@ class DeterministicElasticReleaseTests(unittest.TestCase):
 
         np.testing.assert_allclose(env.mj_data.qpos[:3], [0.0, 0.0, 0.793])
         np.testing.assert_allclose(env.mj_data.qpos[3:7], [1.0, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(env.mj_data.qpos[7:36], 0.01)
         np.testing.assert_allclose(env.mj_data.qvel, 0.0)
         self.assertFalse(env.elastic_band.enable)
 

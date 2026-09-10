@@ -457,6 +457,22 @@ class DefaultEnv:
                 raise ValueError("deterministic elastic release quaternion is zero")
             self.mj_data.qpos[:3] = root_position
             self.mj_data.qpos[3:7] = root_quaternion / norm
+            body_joint_positions = self.config.get(
+                "ELASTIC_RELEASE_BODY_JOINT_POSITIONS"
+            )
+            if body_joint_positions is not None:
+                body_joint_positions = np.asarray(
+                    body_joint_positions, dtype=np.float64
+                )
+                if body_joint_positions.shape != (self.num_body_dof,):
+                    raise ValueError(
+                        "deterministic elastic release body joint positions "
+                        f"must contain {self.num_body_dof} values"
+                    )
+                body_end = self.qpos_offset + self.num_body_dof
+                self.mj_data.qpos[self.qpos_offset:body_end] = (
+                    body_joint_positions
+                )
             zero_velocity = self.config.get(
                 "ELASTIC_RELEASE_ZERO_ROBOT_VELOCITY", True
             )
@@ -472,7 +488,9 @@ class DefaultEnv:
             print(
                 "Deterministic G1 release: "
                 f"root=({root_position[0]:.3f}, {root_position[1]:.3f}, "
-                f"{root_position[2]:.3f}), robot velocity="
+                f"{root_position[2]:.3f}), body joints="
+                f"{'configured' if body_joint_positions is not None else 'preserved'}, "
+                "robot velocity="
                 f"{'0' if zero_velocity else 'preserved'}"
             )
         self.elastic_band.enable = False
